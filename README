@@ -14,4 +14,14 @@ When you are creating the different components or updating the components of you
 in this setting you can select which Salesforce Object Field the data should be upserted into for the object that you selected when you created the webform.
 Finally once the webform is filled out and submitted the data will be upserted into your Salesforce account. 
 
+Contributors
+------------
+7.x-0.3
+Campaign subscription added by BramEsposito http://bramesposito.com
+- Campaign subscription added in the enable salesforce form
+- Campaign status can be set in the enable salesforce form
+- Enabled integration in other content types with webfroms enabled
+- Upsert field selection: avoid duplicates
 
+7.x-0.2 
+Original byb Ekristen: http://erikkristensen.com

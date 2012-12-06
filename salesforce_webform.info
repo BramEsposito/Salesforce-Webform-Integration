@@ -2,7 +2,7 @@
 name = Salesforce Webform Integration
 description = Allows for data from Webform submissions to be sent to Salesforce.
 core = 7.x
-version = "7.x-0.2"
+version = "7.x-0.3"
 package = Salesforce
 dependencies[] = salesforce_api
 dependencies[] = webform

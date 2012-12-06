@@ -31,7 +31,7 @@ function salesforce_webform_menu()
  */
 function salesforce_webform_node_load($nodes, $types)
 {
-	// We only care if we are laoding a single node.
+	// We only care if we are loading a single node.
 	if (count($nodes) > 1)
 	{
 		return;
@@ -39,9 +39,8 @@ function salesforce_webform_node_load($nodes, $types)
 
 	$node = $nodes[key($nodes)];
 
-	// We only care if we are dealing with a webform node
-	if ($node->type == 'webform')
-	{
+  // Check if node can have a form
+  if (in_array($node->type, webform_variable_get('webform_node_types'))) {
 		$result = db_select('salesforce_webforms', 'sw')
 					->fields('sw')
 					->condition('nid', $node->nid)
@@ -52,13 +51,15 @@ function salesforce_webform_node_load($nodes, $types)
 		{
 			$node->use_salesforce    = $result->enabled;
 			$node->salesforce_object = $result->object;
+			$node->salesforce_campaign = $result->campaign;
+			$node->salesforce_campaign_status = $result->campaign_status;
+			$node->salesforce_object_upsert = $result->object_upsert;
 		}
 		else
 		{
 			$node->use_salesforce = 0;
 		}		
 	}
-
 } // end function salesforce_webform_node_load
 
 
@@ -95,7 +96,8 @@ function salesforce_webform_node_update($node)
  */
 function _salesforce_webform_node_insert_update($node)
 {
-	if ($node->type != 'webform' && !isset($node->salesforce_webform_settings['use_salesforce']))
+//	if ($node->type != 'webform' && !isset($node->salesforce_webform_settings['use_salesforce']))
+	if (!isset($node->salesforce_webform_settings['use_salesforce']))
 		return;
 
 	$result = db_select('salesforce_webforms', 'sw')
@@ -110,7 +112,10 @@ function _salesforce_webform_node_insert_update($node)
 			->fields(array(
 				'nid' => $node->nid,
 				'enabled' => ($node->salesforce_webform_settings['use_salesforce'] == 1) ? 1 : 0,
-				'object' => $node->salesforce_webform_settings['salesforce_object']
+				'object' => $node->salesforce_webform_settings['salesforce_object'],
+				'object_upsert' => $node->salesforce_webform_settings['salesforce_object_upsert'],
+				'campaign' => $node->salesforce_webform_settings['salesforce_campaign'],
+				'campaign_status' => $node->salesforce_webform_settings['salesforce_campaign_status'],
 			))
 			->execute();
 	}
@@ -120,13 +125,48 @@ function _salesforce_webform_node_insert_update($node)
 		db_update('salesforce_webforms')
 			->fields(array(
 				'enabled' => ($node->salesforce_webform_settings['use_salesforce'] == 1) ? 1 : 0,
-				'object' => $node->salesforce_webform_settings['salesforce_object']
+				'object' => $node->salesforce_webform_settings['salesforce_object'],
+				'object_upsert' => $node->salesforce_webform_settings['salesforce_object_upsert'],
+				'campaign' => $node->salesforce_webform_settings['salesforce_campaign'],
+				'campaign_status' => $node->salesforce_webform_settings['salesforce_campaign_status'],
 			))
 			->condition('nid', $node->nid)
 			->execute();
 	}
 
 } // end function _salesforce_webform_node_insert_update
+
+/**
+ * Private Function (only to be used from within this module)
+ * 
+ * This function is called by the hook_form_alter callbacks to provide 
+ * the campaigns available in Salesforce.
+ */
+function _salesforce_webform_get_campaigns() {
+  $options = array();
+  $records = salesforce_api_query("SELECT Id, Name from Campaign");
+  foreach ($records as $record) {
+    $sObject = new SObject($record);
+    $options[$sObject->Id] = $sObject->Name;
+  }
+  return $options;
+}
+
+/**
+ * Private Function (only to be used from within this module)
+ * 
+ * This function is called by the hook_form_alter callbacks to provide 
+ * the campaign statuses available in Salesforce.
+ */
+function _salesforce_webform_get_campaign_status() {
+  $options = array();
+  $records = salesforce_api_query("SELECT Label from CampaignMemberStatus");
+  foreach ($records as $record) {
+    $sObject = new SObject($record);
+    $options[$sObject->Label] = $sObject->Label;
+  }
+  return $options;
+}
 
 
 /**
@@ -138,14 +178,33 @@ function _salesforce_webform_node_insert_update($node)
  */
 function salesforce_webform_form_alter(&$form, &$form_state, $form_id)
 {
-	if ( $form_id == 'webform_node_form' )
-	{		
+  // Show warnings
+  if ($form_id == "webform_components_form" && $form["#node"]->use_salesforce == 1) {
+      $result = db_select('salesforce_webform_fieldmaps', 'swf')
+					->fields('swf', array('cid'))
+					->condition('nid', $form['#node']->webform['components'][1]['nid'])
+					->condition('sffname', $upsertfield = $form['#node']->salesforce_object_upsert)
+					->execute()
+					->fetchObject();
+					
+			if(!isset($result->cid)) drupal_set_message(t("Please create a form field of Salesforce field type %upsert in order to enable deduplication on %upsert. ",array("%upsert"=>$form['#node']->salesforce_object_upsert)), "error");
+			
+			if (isset($result->cid) && !$form['#node']->webform['components'][$result->cid]['mandatory']) drupal_set_message(t("Webform component %component should be mandatory in order to ensure deduplication on %upsert. ",array("%component"=>$form['#node']->webform['components'][$result->cid]['name'],"%upsert"=>$form['#node']->salesforce_object_upsert)), "error");
+  }
+  
+  // Check if node has a form
+  if (in_array(substr($form_id,0,-10), webform_variable_get('webform_node_types'))) {
 		$types = array();
 		foreach (salesforce_api_describeGlobal()->types as $type)
 		{
 			$types[$type->name] = $type->label;
 		}
-
+		$campaigns = array_merge(array('none' => '--None--'),_salesforce_webform_get_campaigns());
+		$statuses = array_merge(array('auto' => '--Auto--'),_salesforce_webform_get_campaign_status());
+     $selected = isset($form_state['values']['salesforce_webform_settings']['salesforce_object']) ? $form_state['values']['salesforce_webform_settings']['salesforce_object'] : "Contact";
+     
+     if(isset($form['#node']->salesforce_object) && $form['#node']->salesforce_object != "") $selected = $form['#node']->salesforce_object;
+    
 		/* Start SalesForce Settings Form */
 		$form['salesforce_webform_settings'] = array(
 			'#type' => 'fieldset',
@@ -173,11 +232,67 @@ function salesforce_webform_form_alter(&$form, &$form_state, $form_id)
 			'#title' => t('Object Type'),
 			'#options' => $types,
 			'#description' => t('Select which object type to submit to.'),
-			'#default_value' => (isset($form['#node']->salesforce_object)) ? $form['#node']->salesforce_object : ''
+			'#default_value' => (isset($form['#node']->salesforce_object)) ? $form['#node']->salesforce_object : 'Contact',
+			'#ajax' => array(
+        // When 'event' occurs, Drupal will perform an ajax request in the
+        // background. Usually the default value is sufficient (eg. change for
+        // select elements), but valid values include any jQuery event,
+        // most notably 'mousedown', 'blur', and 'submit'.
+        // 'event' => 'change',
+        'callback' => '_salesforce_webform__ajax_load_upsert',
+        'wrapper' => 'dropdown-second-replace',
+      ),
+		);
+		$form['salesforce_webform_settings']['salesforce_object_upsert'] = array(
+			'#type' => 'select',
+			'#title' => t('Upsert this object on'),
+			'#prefix' => '<div id="dropdown-second-replace">',
+      '#suffix' => '</div>',
+			'#options' => _salesforce_webform_load_object_fields($selected),
+			'#description' => t('Select which field the object has to be upserted on (unique key).'),
+			'#default_value' => (isset($form['#node']->salesforce_object_upsert)) ? $form['#node']->salesforce_object_upsert : 'Email'
+		);
+		
+		// Subscribe to Salesforce Campaign
+		$form['salesforce_webform_settings']['salesforce_campaign'] = array(
+			'#type' => 'select',
+			'#title' => t('Subscribe to Campaign'),
+			'#options' => $campaigns,
+			'#description' => t('Select which Campaign to subscribe to.'),
+			'#default_value' => (isset($form['#node']->salesforce_campaign)) ? $form['#node']->salesforce_campaign : ''
+		);
+		// TODO: handle resend
+		
+		// Status that the Campaign needs to be put in for this Object
+		$form['salesforce_webform_settings']['salesforce_campaign_status'] = array(
+			'#type' => 'select',
+			'#title' => t('Set Campaign status'),
+			'#options' => $statuses,
+			'#description' => t('Select the status to set the Campaign to.'),
+			'#default_value' => (isset($form['#node']->salesforce_campaign_status)) ? $form['#node']->salesforce_campaign_status : ''
 		);
 	}
 } // end function salesforce_webform_form_alter
 
+/**
+ * Selects just the second dropdown to be returned for re-rendering
+ *
+ * Since the controlling logic for populating the form is in the form builder
+ * function, all we do here is select the element and return it to be updated.
+ *
+ * @return renderable array (the second dropdown)
+ */
+function _salesforce_webform__ajax_load_upsert($form, $form_state) {
+  return $form['salesforce_webform_settings']['salesforce_object_upsert'];
+}
+
+function _salesforce_webform_load_object_fields ($selected) {
+  foreach (salesforce_api_describeSObject($selected)->fields as $field)
+	{
+		$options[$field->name] = $field->label;
+	}
+  return $options;
+}
 
 /**
  * Implementation of MODULE_form_FORM_ID_alter
@@ -200,7 +315,8 @@ function salesforce_webform_form_webform_component_edit_form_alter(&$form, &$for
 
 		$options = array();
 		$options['none'] = '--None--';
-		foreach (salesforce_api_describeSObject('Lead')->fields as $field)
+		// Should load from the selection in salesforce_webform_form_alter
+		foreach (salesforce_api_describeSObject($node->salesforce_object)->fields as $field)
 		{
 			$options[$field->name] = $field->label;
 		}
@@ -232,16 +348,17 @@ function salesforce_webform_webform_component_insert($component)
 {
 	if (!isset($component['salesforce_webform']))
 		return;
+  
+  $component['mandatory'] = 1;
 
 	db_insert('salesforce_webform_fieldmaps')
 		->fields(array(
 			'nid' => $component['nid'],
 			'cid' => $component['cid'],
-			'sffname' => $component['salesforce_webform']['object']
+			'sffname' => $component['salesforce_webform']['object'],
 		))
 		->execute();
 } // end function salesforce_webform_webform_component_insert
-
 
 /**
  * Implementation hook_webform_component_update
@@ -274,7 +391,7 @@ function salesforce_webform_webform_component_update($component)
 		{
 			db_update('salesforce_webform_fieldmaps')
 				->fields(array(
-					'sffname' => $component['salesforce_webform']['object']
+					'sffname' => $component['salesforce_webform']['object'],
 				))
 				->condition('nid', $component['nid'])
 				->condition('cid', $component['cid'])
@@ -286,7 +403,7 @@ function salesforce_webform_webform_component_update($component)
 				->fields(array(
 					'nid' => $component['nid'],
 					'cid' => $component['cid'],
-					'sffname' => $component['salesforce_webform']['object']
+					'sffname' => $component['salesforce_webform']['object'],
 				))
 				->execute();
 		}
@@ -323,8 +440,10 @@ function salesforce_webform_webform_submission_insert($node, $submission)
 	if (!isset($node->use_salesforce) || (isset($node->use_salesforce) && $node->use_salesforce == 0))
 		return;
 
+  // TODO: add logging (which form) to salesforce when submitting
 	$components = $node->webform['components'];
 
+  $upsertvalue = $node->salesforce_object_upsert;
 	$records = array();
 	$record = array();
 	foreach ($components as $key => $component)
@@ -336,14 +455,18 @@ function salesforce_webform_webform_submission_insert($node, $submission)
 					->execute()
 					->fetchObject();
 
-		if (!empty($result))
-			$record[$result->sffname] = $submission->data[$component['cid']]['value'][0];
+		if (!empty($result)) {
+		  $record[$result->sffname] = $submission->data[$component['cid']]['value'][0];
+		}
+			
 	}
 	$records[] = $record;
+	
+	watchdog('salesforce_webform', "Upserting on $upsertvalue");
 
 	// Upsert it into SalesForce
-	$result = salesforce_api_upsert($records, $node->salesforce_object);
-
+	$result = salesforce_api_upsert($records, $node->salesforce_object, $upsertvalue);
+	
 	if (isset($result['successes'][0]))
 	{
 		if (isset($result['created'][0]))
@@ -354,6 +477,17 @@ function salesforce_webform_webform_submission_insert($node, $submission)
 		{
 			$sfid = $result['updated'][0];
 		}
+		
+		// subscribe to Campaign
+		if (isset($node->salesforce_campaign) && $node->salesforce_campaign != 0 && $node->salesforce_campaign != "none") {
+		  $records[0] = new stdclass();
+      $records[0]->CampaignId = $node->salesforce_campaign;
+      $records[0]->ContactId = $sfid;
+      if ($node->salesforce_campaign_status != "auto") $records[0]->Status = $node->salesforce_campaign_status;
+      
+		  salesforce_api_upsert($records,"CampaignMember");		  
+		}
+
 
 		db_insert('salesforce_webform_submissions')
 			->fields(array(
@@ -381,6 +515,8 @@ function salesforce_webform_resend_salesforce($nid, $sid)
 {
 	module_load_include('inc', 'webform', 'includes/webform.submissions');
 
+  // TODO: add logging (which form) to salesforce when submitting
+
 	$node = node_load($nid);
 	$submission = webform_get_submission($nid, $sid);
 
@@ -405,9 +541,12 @@ function salesforce_webform_resend_salesforce($nid, $sid)
 			$record[$result->sffname] = $submission->data[$component->cid]['value'][0];
 	}
 	$records[] = $record;
+	
+  $upsertvalue = $node->salesforce_object_upsert;
+	watchdog('salesforce_webform', "Upserting on $upsertvalue");
 
 	// Upsert it into SalesForce
-	$result = salesforce_api_upsert($records, $type = $node->salesforce_object);
+	$result = salesforce_api_upsert($records, $type = $node->salesforce_object, $upsertvalue);
 
 	if (isset($result['successes'][0]))
 	{
@@ -427,6 +566,16 @@ function salesforce_webform_resend_salesforce($nid, $sid)
 			))
 			->condition('sid', $submission->sid)
 			->execute();
+			
+    // subscribe to Campaign
+		if (isset($node->salesforce_campaign) && $node->salesforce_campaign != 0 && $node->salesforce_campaign != "none") {
+		  $records[0] = new stdclass();
+      $records[0]->CampaignId = $node->salesforce_campaign;
+      $records[0]->ContactId = $sfid;
+      if ($node->salesforce_campaign_status != "auto") $records[0]->Status = $node->salesforce_campaign_status;
+      
+		  salesforce_api_upsert($records,"CampaignMember");		  
+		}
 			
 		drupal_set_message('Resend to Salesforce Succeeded');
 	}

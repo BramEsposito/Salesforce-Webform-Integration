@@ -98,6 +98,24 @@ function salesforce_webform_schema()
 				'length' => '255',
 		        'default' => '',
 			),
+			'object_upsert' => array(
+				'description' => 'Salesforce Field name on which we will upsert',
+		        'type' => 'varchar',
+				'length' => '255',
+		        'default' => '',
+			),
+			'campaign' => array(
+				'description' => 'Salesforce Campaign Id',
+		        'type' => 'varchar',
+				'length' => '255',
+		        'default' => '',
+			),
+			'campaign_status' => array(
+				'description' => 'Salesforce CampaignStatus Label',
+		        'type' => 'varchar',
+				'length' => '255',
+		        'default' => '',
+			),
 		),
 		'index' => array(
 			'id' => array('id'),
